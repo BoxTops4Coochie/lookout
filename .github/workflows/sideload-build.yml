@@ -1,0 +1,76 @@
+# Personal sideload build for Lookout (Frigate iOS client).
+# Builds an UNSIGNED arm64 Release .ipa; re-sign locally with Sideloadly
+# using a free Apple ID. No certificates in CI.
+# macos-26 runner (matches our toolchain standard for Swift 6 @Observable).
+
+name: Sideload Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: "Bundle identifier to build with"
+        required: false
+        default: "com.aabduh.lookout"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build unsigned device .ipa
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    env:
+      SCHEME: Lookout
+      BUNDLE_ID: ${{ inputs.bundle_id || 'com.aabduh.lookout' }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build Release for arm64 device (unsigned)
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Lookout.xcodeproj \
+            -scheme "${SCHEME}" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath DerivedData \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM= \
+            CODE_SIGN_IDENTITY=
+
+      - name: Package unsigned .ipa
+        run: |
+          set -euo pipefail
+          APP=$(find DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "Packaging ${APP}"
+          test -n "${APP}"
+          rm -rf ipa && mkdir -p ipa/Payload
+          cp -R "${APP}" ipa/Payload/
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
+            "ipa/Payload/$(basename "${APP}")/Info.plist"
+          cd ipa
+          zip -qry ../Lookout-unsigned.ipa Payload
+          cd ..
+          ls -la Lookout-unsigned.ipa
+
+      - name: Upload .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lookout-unsigned-ipa
+          path: Lookout-unsigned.ipa
+          retention-days: 14

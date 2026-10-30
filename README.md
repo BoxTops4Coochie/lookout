@@ -77,4 +77,9 @@ between your phone and your Frigate box. See
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) —
+use, fork, and modify it for any **noncommercial** purpose. Commercial use
+requires a separate license; contact the author to arrange one.
+
+Versions up to and including v0.8.0 were released under the MIT license. That
+grant still applies to copies already distributed under it.

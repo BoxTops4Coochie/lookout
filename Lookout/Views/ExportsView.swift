@@ -33,11 +33,14 @@ struct ExportsView: View {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if exports.isEmpty {
                     ContentUnavailableView("No exports yet", systemImage: "square.and.arrow.down",
-                        description: Text("Create clips from a camera’s History screen. Frigate renders them server-side."))
+                        description: Text("Open a camera and tap Save to make a clip. It will show up here when Frigate finishes rendering it."))
                 } else {
                     List {
                         ForEach(sorted) { item in
-                            ExportRow(export: item, isDownloading: downloadingID == item.id)
+                            ExportRow(export: item, isDownloading: downloadingID == item.id,
+                                      onPlay: { playExport = item },
+                                      onSave: { Task { await save(item) } },
+                                      onShare: { prepareShare(item) })
                                 .listRowBackground(Theme.card)
                                 .swipeActions(edge: .trailing) {
                                     Button(role: .destructive) {
@@ -217,36 +220,70 @@ private struct ExportRow: View {
     @Environment(AppModel.self) private var model
     let export: FrigateExport
     let isDownloading: Bool
+    let onPlay: () -> Void
+    let onSave: () -> Void
+    let onShare: () -> Void
 
     private var inProgress: Bool { export.inProgress == true || export.status == "in_progress" }
 
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                if let api = model.api, let thumb = export.thumbPath {
-                    FrigateImage(thumbURL(api: api, thumb: thumb), model: model)
-                        .frame(width: 84, height: 48)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else {
-                    RoundedRectangle(cornerRadius: 8).fill(Theme.bg)
-                        .frame(width: 84, height: 48)
-                        .overlay(Image(systemName: "film").foregroundStyle(.secondary))
+        HStack(spacing: 10) {
+            // Whole left side = play. Previously the row looked tappable but
+            // did nothing; Play lived only in a long-press menu.
+            Button(action: onPlay) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        if let api = model.api, let thumb = export.thumbPath {
+                            FrigateImage(thumbURL(api: api, thumb: thumb), model: model)
+                                .frame(width: 72, height: 41)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        } else {
+                            RoundedRectangle(cornerRadius: 8).fill(Theme.bg)
+                                .frame(width: 72, height: 41)
+                                .overlay(Image(systemName: "film").foregroundStyle(.secondary))
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(export.name ?? export.id).font(.subheadline.weight(.medium)).lineLimit(1)
+                        Text(export.camera + " · " + timeString(export.date))
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        if inProgress {
+                            Label("Rendering…", systemImage: "hourglass")
+                                .font(.caption2).foregroundStyle(Theme.accent)
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
+                .contentShape(Rectangle())
             }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(export.name ?? export.id).font(.subheadline.weight(.medium)).lineLimit(1)
-                Text(export.camera + " · " + timeString(export.date))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if inProgress {
-                    Label("Rendering…", systemImage: "hourglass")
-                        .font(.caption2).foregroundStyle(Theme.accent)
-                }
-            }
-            Spacer()
+            .buttonStyle(.plain)
+            .disabled(inProgress)
+
             if isDownloading {
                 ProgressView()
             } else if !inProgress {
-                Image(systemName: "chevron.right").foregroundStyle(.tertiary).font(.caption)
+                Button(action: onSave) {
+                    VStack(spacing: 3) {
+                        Image(systemName: "arrow.down.to.line")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("Save").font(.caption2.weight(.semibold))
+                    }
+                    .frame(width: 52, height: 46)
+                    .background(Theme.accent, in: RoundedRectangle(cornerRadius: 11))
+                    .foregroundStyle(.black)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Save to Photos")
+
+                Button(action: onShare) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 38, height: 46)
+                        .background(Theme.card, in: RoundedRectangle(cornerRadius: 11))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Share clip")
             }
         }
         .padding(.vertical, 4)

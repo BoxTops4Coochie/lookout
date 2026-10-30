@@ -15,8 +15,8 @@ final class WebRTCClient: NSObject, RTCPeerConnectionDelegate {
     }
     var onStateChange: ((State) -> Void)?
     /// Fires when the remote VIDEO track actually starts delivering — ICE can
-    /// reach .connected with zero media flowing (observed with 102_back_yard),
-    /// which showed a black surface instead of the poster.
+    /// reach .connected with zero media flowing (observed on a dense camera
+    /// feed), which showed a black surface instead of the poster.
     var onVideoTrack: (() -> Void)?
     private(set) var hasVideoTrack = false
     private(set) var errorMessage: String?

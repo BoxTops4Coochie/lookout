@@ -12,6 +12,10 @@ struct CameraHistoryView: View {
     let camera: FrigateConfig.Camera
 
     @State private var selectedDay: Date = .now.addingTimeInterval(-3600)
+    /// End of the selected day, frozen when the day is loaded. A computed
+    /// `Date.now` made `dayEnd` grow on every render (and every 0.5 s playhead
+    /// tick), which rescaled the rail under the user's finger.
+    @State private var dayEndFixed: Double = 0
     @State private var availableDays: [Date] = []
     @State private var segments: [RecordingSegment] = []
     @State private var events: [FrigateEvent] = []
@@ -27,8 +31,6 @@ struct CameraHistoryView: View {
     @State private var customEnd = Date.now
     @State private var exportName = ""
     @State private var exportSpeed: Double = 1
-    /// Rail taps only mark export start/end while this is ON (button below).
-    @State private var selectingRange = false
 
     // VOD player (block = <=3h window containing the playhead)
     @State private var player: AVPlayer?
@@ -40,33 +42,52 @@ struct CameraHistoryView: View {
 
     private var dayStart: Double { Calendar.current.startOfDay(for: selectedDay).timeIntervalSince1970 }
     private var dayEnd: Double {
-        min(dayStart + 86400, max(Date.now.timeIntervalSince1970, dayStart + 60))
+        dayEndFixed > dayStart ? dayEndFixed
+            : min(dayStart + 86400, max(Date.now.timeIntervalSince1970, dayStart + 60))
+    }
+
+    private func refreshDayBounds() {
+        let start = Calendar.current.startOfDay(for: selectedDay).timeIntervalSince1970
+        dayEndFixed = min(start + 86400, max(Date.now.timeIntervalSince1970, start + 60))
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    dayStrip
-                    playerCard
-                    ReviewTimeline(dayStart: dayStart,
-                                   dayEnd: dayEnd,
-                                   segments: segments,
-                                   events: events,
-                                   playhead: playhead,
-                                   rangeStart: rangeStart,
-                                   rangeEnd: rangeEnd,
-                                   selecting: selectingRange,
-                                   onScrub: { scrub(to: $0) },
-                                   onScrubEnd: { scrubSettled() },
-                                   onRangeTap: { markRange($0) })
-                        .cardStyle()
-                    selectionBar
-                    exportButton
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        dayStrip
+                        quickSaveButton
+                        playerCard
+                        ReviewTimeline(dayStart: dayStart,
+                                       dayEnd: dayEnd,
+                                       segments: segments,
+                                       events: events,
+                                       playhead: playhead,
+                                       rangeStart: rangeStart,
+                                       rangeEnd: rangeEnd,
+                                       selecting: selectionActive,
+                                       onScrub: { scrub(to: $0) },
+                                       onScrubEnd: { scrubSettled() },
+                                       onRangeTap: { markRange($0) },
+                                       onRangeChange: { s, e in
+                                           rangeStart = s
+                                           rangeEnd = e
+                                       })
+                            .cardStyle()
+                            .id("timeline")
+                        selectionBar
+                        exportButton
+                    }
+                    .padding()
                 }
-                .padding()
+                .background(Theme.bg)
+                .onChange(of: scrollToTimeline) { _, go in
+                    guard go else { return }
+                    scrollToTimeline = false
+                    withAnimation { proxy.scrollTo("timeline", anchor: .top) }
+                }
             }
-            .background(Theme.bg)
             .navigationTitle("History — \(camera.friendlyName ?? camera.name)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -74,8 +95,22 @@ struct CameraHistoryView: View {
                     Button("Done") { stopPlayer(); dismiss() }
                 }
             }
-            .task { await loadDays(); await loadDayData(); startBlock(at: playhead) }
+            .task {
+                await loadDays()
+                await loadDayData()
+                // the day's bounds are now known — never scrub before dayStart
+                playhead = min(max(playhead, dayStart), max(dayStart, dayEnd - 5))
+                startBlock(at: playhead)
+            }
             .onDisappear { stopPlayer() }
+            .sheet(isPresented: $showQuickSave, onDismiss: {
+                guard chooseTimeline else { return }
+                chooseTimeline = false
+                beginSelection()
+                scrollToTimeline = true
+            }) {
+                QuickSaveSheet(camera: camera) { chooseTimeline = true }
+            }
             .overlay {
                 if let msg = exportMessage {
                     VStack { Spacer()
@@ -121,7 +156,11 @@ struct CameraHistoryView: View {
     private func select(_ day: Date) {
         selectedDay = day
         stopPlayer()
-        playhead = min(Date.now.timeIntervalSince1970, dayEnd - 30)
+        refreshDayBounds()
+        // A range from the previous day has no meaning on this one.
+        rangeStart = nil
+        rangeEnd = nil
+        playhead = min(Date.now.timeIntervalSince1970, max(dayStart, dayEnd - 30))
         // Must load the new day's segments BEFORE building the block: the
         // clip-run table drives player-time -> wall-time mapping, and a stale
         // (or empty) table makes the playhead jump hours after each drag.
@@ -230,6 +269,10 @@ struct CameraHistoryView: View {
         // across gaps; map both directions via the clip-run table.
         let obs = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
                                             queue: .main) { tm in
+            // A fresh item reports t=0 before the initial seek settles; mapping
+            // that tick through wallTime() used to yank the playhead back to
+            // the start of the block right after a tap.
+            guard tm.seconds.isFinite, tm.seconds > 0 else { return }
             let wall = wallTime(forLocal: tm.seconds)
             playhead = wall
             clockLabel = timeString(wall)
@@ -291,6 +334,21 @@ struct CameraHistoryView: View {
     // MARK: Scrub + range
 
     @State private var wasPlayingBeforeScrub = false
+    @State private var showQuickSave = false
+    @State private var chooseTimeline = false
+    @State private var scrollToTimeline = false
+
+    /// The friendly path: one tap, no timeline, no mode switch.
+    private var quickSaveButton: some View {
+        Button { showQuickSave = true } label: {
+            Label("Save the last few minutes", systemImage: "square.and.arrow.down")
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+                .background(Theme.accent, in: RoundedRectangle(cornerRadius: 14))
+                .foregroundStyle(.black)
+        }
+    }
 
     private func scrub(to t: Double) {
         if isPlaying { wasPlayingBeforeScrub = true; player?.pause(); isPlaying = false }
@@ -313,18 +371,21 @@ struct CameraHistoryView: View {
         }
     }
 
+    /// Taps only seek now — the start/end points come from the two drag lines.
     private func markRange(_ t: Double) {
-        guard selectingRange else {
-            scrub(to: t)   // plain tap = seek, not range marking
-            return
-        }
-        if rangeStart == nil || (rangeStart != nil && rangeEnd != nil) {
-            rangeStart = t; rangeEnd = nil
-        } else if let s = rangeStart {
-            rangeEnd = max(s, t)
-            selectingRange = false   // both ends picked — leave selection mode
-        }
         scrub(to: t)
+    }
+
+    /// Both lines exist → show the band and its drag handles.
+    private var selectionActive: Bool { rangeStart != nil && rangeEnd != nil }
+
+    /// Seed a 5-minute range ending at the playhead so both drag lines appear
+    /// immediately, instead of waiting for two taps.
+    private func beginSelection() {
+        let end = min(dayEnd, max(dayStart + 60, playhead))
+        let start = max(dayStart, end - 300)
+        rangeStart = start
+        rangeEnd = max(start + 1, end)
     }
 
     private func togglePlay() {
@@ -338,21 +399,18 @@ struct CameraHistoryView: View {
     private var selectionBar: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                if selectingRange {
-                    // pressing again cancels an in-progress start point
-                    selectingRange = false
-                    if rangeEnd == nil { rangeStart = nil }
-                } else {
+                if selectionActive {
                     rangeStart = nil; rangeEnd = nil
-                    selectingRange = true
+                } else {
+                    beginSelection()
                 }
             } label: {
-                Label(selectingRange ? "Cancel — now tap start, then end" : "Set start/end from timeline",
-                      systemImage: selectingRange ? "xmark.circle" : "rectangle.and.pencil.and.ellipsis")
+                Label(selectionActive ? "Clear start & end lines" : "Pick start & end on the timeline",
+                      systemImage: selectionActive ? "xmark.circle" : "rectangle.and.pencil.and.ellipsis")
                     .font(.callout.weight(.medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
-                    .background(selectingRange ? Theme.accent.opacity(0.25) : Theme.card,
+                    .background(selectionActive ? Theme.accent.opacity(0.25) : Theme.card,
                                 in: RoundedRectangle(cornerRadius: 12))
             }
             if let s = rangeStart, let e = rangeEnd {
@@ -363,15 +421,13 @@ struct CameraHistoryView: View {
                         .foregroundStyle(Theme.accent)
                     Spacer()
                     Button("Clear") {
-                        rangeStart = nil; rangeEnd = nil; selectingRange = false
+                        rangeStart = nil; rangeEnd = nil
                     }
                     .font(.footnote).foregroundStyle(.secondary)
                 }
-            } else if let s = rangeStart {
-                Label("Start set: \(timeString(s)) — now tap the end point", systemImage: "hand.tap")
-                    .font(.callout).foregroundStyle(Theme.accent)
             } else {
-                Label("Drag the timeline to scrub and preview.", systemImage: "hand.tap")
+                Label("Pick a range, then drag the two lines to fine-tune it.",
+                      systemImage: "hand.draw")
                     .font(.callout).foregroundStyle(.secondary)
             }
         }
@@ -423,7 +479,7 @@ struct CameraHistoryView: View {
             Button {
                 Task { await createExport() }
             } label: {
-                Label("Export clip", systemImage: "square.and.arrow.down")
+                Label("Export selected range", systemImage: "square.and.arrow.down")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
@@ -461,6 +517,7 @@ struct CameraHistoryView: View {
 
     private func loadDayData() async {
         guard let api = model.api else { return }
+        refreshDayBounds()
         isLoading = true; defer { isLoading = false }
         segments = (try? await api.recordingSegments(camera: camera.name, after: dayStart, before: dayEnd)) ?? []
         events = (try? await api.events(camera: camera.name, after: dayStart, before: dayEnd, limit: 1000)) ?? []

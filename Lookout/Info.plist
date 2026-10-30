@@ -24,6 +24,8 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Lookout accesses the camera so WebRTC live streams can initialize; viewing requires no camera permission prompt.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Lookout connects to your Frigate server and cameras on your local network.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

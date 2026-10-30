@@ -5,6 +5,15 @@ import SwiftUI
 struct LiveView: View {
     @Environment(AppModel.self) private var model
     @State private var reloadID = UUID()
+    /// One big tile per row by default: far easier to see and tap than a
+    /// two-up grid, especially on a phone held at arm's length.
+    @AppStorage("live.singleColumn") private var singleColumn = true
+
+    private var gridColumns: [GridItem] {
+        singleColumn
+            ? [GridItem(.flexible(), spacing: 12)]
+            : [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -18,8 +27,7 @@ struct LiveView: View {
                         .symbolEffect(.variableColor)
                 } else {
                     ScrollView {
-                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12),
-                                            GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                        LazyVGrid(columns: gridColumns, spacing: 12) {
                             ForEach(model.cameras) { cam in
                                 NavigationLink(value: cam.name) {
                                     LiveGridCell(camera: cam)
@@ -41,8 +49,17 @@ struct LiveView: View {
                 }
             }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        singleColumn.toggle()
+                    } label: {
+                        Image(systemName: singleColumn ? "rectangle.grid.2x2" : "rectangle.grid.1x2")
+                    }
+                    .accessibilityLabel(singleColumn ? "Show two cameras per row" : "Show one camera per row")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { reloadID = UUID() } label: { Image(systemName: "arrow.clockwise") }
+                        .accessibilityLabel("Reload cameras")
                 }
             }
         }
@@ -66,7 +83,7 @@ private struct LiveGridCell: View {
             HStack(spacing: 6) {
                 Circle().fill(.red).frame(width: 7, height: 7)
                 Text(camera.friendlyName ?? camera.name)
-                    .font(.caption.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
             }
@@ -91,7 +108,8 @@ struct CameraDetailView: View {
     @State private var ptz: PTZInfo?
     @State private var showPTZ = false
     @State private var showHistory = false
-    @State private var chromeVisible = true
+    @State private var showQuickSave = false
+    @State private var openHistoryAfterSave = false
 
     // digital pan/zoom (fixed cameras); ONVIF wired in parallel for real PTZ cams
     @State private var zoomScale: CGFloat = 1
@@ -143,7 +161,6 @@ struct CameraDetailView: View {
                     .onTapGesture(count: 2) {
                         withAnimation(.snappy) { zoomScale = 1; lastScale = 1; panOffset = .zero; lastPan = .zero }
                     }
-                    .onTapGesture { withAnimation(.snappy) { chromeVisible.toggle() } }
 
                 // Overlay chrome (respects safe area — not under notch/status bar)
                 VStack {
@@ -158,9 +175,8 @@ struct CameraDetailView: View {
                     }
                     bottomBar
                 }
-                .opacity(chromeVisible ? 1 : 0)
-                .animation(.snappy, value: chromeVisible)
-                .allowsHitTesting(chromeVisible)
+                // Controls stay put. Tap-to-hide used to strand people on a
+                // bare video with no visible way back to History or Save.
             }
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -174,6 +190,16 @@ struct CameraDetailView: View {
         .onDisappear { live.stop() }
         .sheet(isPresented: $showHistory) {
             CameraHistoryView(camera: camera)
+        }
+        .sheet(isPresented: $showQuickSave, onDismiss: {
+            // "Choose from timeline" — present History once the save sheet is
+            // fully gone (two sheets can't swap in the same runloop turn).
+            if openHistoryAfterSave {
+                openHistoryAfterSave = false
+                showHistory = true
+            }
+        }) {
+            QuickSaveSheet(camera: camera) { openHistoryAfterSave = true }
         }
     }
 
@@ -240,7 +266,18 @@ struct CameraDetailView: View {
     }
 
     private var bottomBar: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
+            // The one thing most people come here to do.
+            controlButton(icon: "square.and.arrow.down", label: "Save",
+                          active: false, enabled: true, prominent: true) {
+                showQuickSave = true
+            }
+
+            // History
+            controlButton(icon: "clock.arrow.circlepath", label: "History", active: false, enabled: true) {
+                showHistory = true
+            }
+
             // Controls toggle (ONVIF pad on PTZ cams, digital pad on fixed cams)
             controlButton(
                 icon: showPTZ ? "dpad.fill" : "dpad",
@@ -251,12 +288,7 @@ struct CameraDetailView: View {
                 withAnimation(.snappy) { showPTZ.toggle() }
             }
 
-            // History
-            controlButton(icon: "clock.arrow.circlepath", label: "History", active: false, enabled: true) {
-                showHistory = true
-            }
-
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 14)
@@ -268,16 +300,17 @@ struct CameraDetailView: View {
     }
 
     private func controlButton(icon: String, label: String, active: Bool,
-                               enabled: Bool, action: @escaping () -> Void) -> some View {
+                               enabled: Bool, prominent: Bool = false,
+                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 20, weight: .medium))
-                Text(label).font(.caption2.weight(.semibold))
+            VStack(spacing: 5) {
+                Image(systemName: icon).font(.system(size: 22, weight: .semibold))
+                Text(label).font(.caption.weight(.semibold))
             }
-            .foregroundStyle(enabled ? (active ? .black : .white) : .white.opacity(0.35))
-            .frame(width: 64, height: 56)
-            .background(active && enabled ? Theme.accent : .black.opacity(0.45),
-                        in: RoundedRectangle(cornerRadius: 14))
+            .foregroundStyle(prominent || active ? .black : .white)
+            .frame(width: 84, height: 64)
+            .background(prominent || active ? Theme.accent : .black.opacity(0.5),
+                        in: RoundedRectangle(cornerRadius: 16))
         }
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.6)

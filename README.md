@@ -14,14 +14,18 @@ with self-signed HTTPS (first-run certificate pinning).
 
 ## Features
 
-- **Live** — camera grid, full-screen detail, PTZ control pad (via Frigate
-  ONVIF command socket), sub-second WebRTC with automatic fallback to RTSP,
-  HLS, and JPEG stills
+- **Live** — large one-per-row camera tiles (2-up grid toggle), full-screen
+  detail, PTZ control pad (via Frigate ONVIF command socket), sub-second
+  WebRTC with automatic fallback to RTSP, HLS, and JPEG stills
+- **One-tap clips** — save the last 1, 5, 10 or 30 minutes, 1 hour, or
+  3 hours from the live view or History, with no timeline work at all
 - **History** — web-UI-style full-day review timeline: recording-density
   bars, motion waveform ticks, detection bars, zoom, drag-to-scrub with
-  gap-aware seeking, tap-to-mark export ranges
+  gap-aware seeking, sideways-swipe / scrollbar panning, and Frigate-style
+  draggable start/end lines for exact export ranges
 - **Exports** — 1×–100× speed (native 25× timelapse + lossless on-device
-  time-warp), custom timeframes, play / Share / Save to Photos
+  time-warp), custom timeframes, and visible Play / Save to Photos / Share
+  actions on every row
 - **Detections** — event grid with camera & type filters, clip playback,
   snapshot viewer
 - **Self-signed friendly** — explicit certificate trust with SHA-256 pinning;
